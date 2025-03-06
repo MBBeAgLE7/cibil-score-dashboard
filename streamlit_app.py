@@ -1,151 +1,106 @@
 import streamlit as st
 import pandas as pd
-import math
-from pathlib import Path
+import joblib
+import plotly.graph_objects as go
+from pymongo import MongoClient
 
-# Set the title and favicon that appear in the Browser's tab bar.
-st.set_page_config(
-    page_title='GDP dashboard',
-    page_icon=':earth_americas:', # This is an emoji shortcode. Could be a URL too.
-)
+# Connect to MongoDB
+client = MongoClient("mongodb+srv://yash10nikam:<77uGUmzGja0mDB0K>@cluster0.ro59v.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0")  # Replace with your MongoDB URI
+db = client["credit_db"]
+collection = db["credit_scores"]
 
-# -----------------------------------------------------------------------------
-# Declare some useful functions.
+# Load the trained model
+model = joblib.load("credit_score_model.pkl")
 
-@st.cache_data
-def get_gdp_data():
-    """Grab GDP data from a CSV file.
-
-    This uses caching to avoid having to read the file every time. If we were
-    reading from an HTTP endpoint instead of a file, it's a good idea to set
-    a maximum age to the cache with the TTL argument: @st.cache_data(ttl='1d')
-    """
-
-    # Instead of a CSV on disk, you could read from an HTTP endpoint here too.
-    DATA_FILENAME = Path(__file__).parent/'data/gdp_data.csv'
-    raw_gdp_df = pd.read_csv(DATA_FILENAME)
-
-    MIN_YEAR = 1960
-    MAX_YEAR = 2022
-
-    # The data above has columns like:
-    # - Country Name
-    # - Country Code
-    # - [Stuff I don't care about]
-    # - GDP for 1960
-    # - GDP for 1961
-    # - GDP for 1962
-    # - ...
-    # - GDP for 2022
-    #
-    # ...but I want this instead:
-    # - Country Name
-    # - Country Code
-    # - Year
-    # - GDP
-    #
-    # So let's pivot all those year-columns into two: Year and GDP
-    gdp_df = raw_gdp_df.melt(
-        ['Country Code'],
-        [str(x) for x in range(MIN_YEAR, MAX_YEAR + 1)],
-        'Year',
-        'GDP',
-    )
-
-    # Convert years from string to integers
-    gdp_df['Year'] = pd.to_numeric(gdp_df['Year'])
-
-    return gdp_df
-
-gdp_df = get_gdp_data()
-
-# -----------------------------------------------------------------------------
-# Draw the actual page
-
-# Set the title that appears at the top of the page.
-'''
-# :earth_americas: GDP dashboard
-
-Browse GDP data from the [World Bank Open Data](https://data.worldbank.org/) website. As you'll
-notice, the data only goes to 2022 right now, and datapoints for certain years are often missing.
-But it's otherwise a great (and did I mention _free_?) source of data.
-'''
-
-# Add some spacing
-''
-''
-
-min_value = gdp_df['Year'].min()
-max_value = gdp_df['Year'].max()
-
-from_year, to_year = st.slider(
-    'Which years are you interested in?',
-    min_value=min_value,
-    max_value=max_value,
-    value=[min_value, max_value])
-
-countries = gdp_df['Country Code'].unique()
-
-if not len(countries):
-    st.warning("Select at least one country")
-
-selected_countries = st.multiselect(
-    'Which countries would you like to view?',
-    countries,
-    ['DEU', 'FRA', 'GBR', 'BRA', 'MEX', 'JPN'])
-
-''
-''
-''
-
-# Filter the data
-filtered_gdp_df = gdp_df[
-    (gdp_df['Country Code'].isin(selected_countries))
-    & (gdp_df['Year'] <= to_year)
-    & (from_year <= gdp_df['Year'])
+# Define feature columns
+FEATURE_COLUMNS = [
+    "INCOME", "SAVINGS", "DEBT", "R_SAVINGS_INCOME", "R_DEBT_INCOME",
+    "R_DEBT_SAVINGS", "R_EDUCATION_INCOME", "R_EXPENDITURE_SAVINGS",
+    "R_EXPENDITURE_INCOME", "CAT_MORTGAGE", "R_ENTERTAINMENT_INCOME", 
+    "R_GROCERIES_INCOME"
 ]
 
-st.header('GDP over time', divider='gray')
+# Page Configuration
+st.set_page_config(page_title="AI Credit Score Dashboard", layout="wide")
 
-''
+# Custom CSS for modern UI
+st.markdown("""
+    <style>
+        body { background-color: #0e1117; color: white; }
+        .big-font { font-size: 24px !important; font-weight: bold; }
+        .risk-box { padding: 15px; border-radius: 10px; text-align: center; font-size: 20px; font-weight: bold; }
+    </style>
+""", unsafe_allow_html=True)
 
-st.line_chart(
-    filtered_gdp_df,
-    x='Year',
-    y='GDP',
-    color='Country Code',
-)
+# Sidebar - User Input
+st.sidebar.title("🔹 User Input")
+user_id = st.sidebar.text_input("Enter User ID")
 
-''
-''
+@st.cache_data
+def fetch_user_data(user_id):
+    user_data = collection.find_one({"Z": user_id}, {"_id": 0})  # Exclude MongoDB _id field
+    return pd.DataFrame([user_data])[FEATURE_COLUMNS] if user_data else None
 
+# Main Content
+st.title("📊 AI-Powered Credit Score Dashboard")
 
-first_year = gdp_df[gdp_df['Year'] == from_year]
-last_year = gdp_df[gdp_df['Year'] == to_year]
+if user_id:
+    user_data = fetch_user_data(user_id)
 
-st.header(f'GDP in {to_year}', divider='gray')
+    if user_data is not None:
+        # Layout: Two columns
+        col1, col2 = st.columns([2, 1])
 
-''
+        with col1:
+            st.subheader("🔍 Fetched Financial Data")
+            st.dataframe(user_data.style.set_properties(**{'background-color': '#262730', 'color': 'white'}))
 
-cols = st.columns(4)
+            # Predict CIBIL Score
+            cibil_score = model.predict(user_data)[0]  
+            st.markdown(f"<p class='big-font'>Predicted CIBIL Score: <span style='color:cyan;'>{cibil_score:.2f}</span></p>", unsafe_allow_html=True)
 
-for i, country in enumerate(selected_countries):
-    col = cols[i % len(cols)]
+            # Determine risk level
+            if cibil_score >= 750:
+                risk_level = "Low Risk 🟢"
+                risk_color = "green"
+            elif 500 <= cibil_score < 750:
+                risk_level = "Medium Risk 🟡"
+                risk_color = "yellow"
+            else:
+                risk_level = "High Risk 🔴"
+                risk_color = "red"
 
-    with col:
-        first_gdp = first_year[first_year['Country Code'] == country]['GDP'].iat[0] / 1000000000
-        last_gdp = last_year[last_year['Country Code'] == country]['GDP'].iat[0] / 1000000000
+            st.markdown(f"<div class='risk-box' style='background-color:{risk_color}; color:white;'>{risk_level}</div>", unsafe_allow_html=True)
 
-        if math.isnan(first_gdp):
-            growth = 'n/a'
-            delta_color = 'off'
-        else:
-            growth = f'{last_gdp / first_gdp:,.2f}x'
-            delta_color = 'normal'
+        with col2:
+            # Financial Trends Visualization
+            income = user_data["INCOME"].values[0]
+            savings = user_data["SAVINGS"].values[0]
+            debt = user_data["DEBT"].values[0]
+            categories = ["Income", "Savings", "Debt"]
+            values = [income, savings, debt]
 
-        st.metric(
-            label=f'{country} GDP',
-            value=f'{last_gdp:,.0f}B',
-            delta=growth,
-            delta_color=delta_color
-        )
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(
+                x=categories, 
+                y=values, 
+                mode='lines+markers',
+                marker=dict(size=12, color='cyan', symbol='circle'),
+                line=dict(color='cyan', width=3),
+                hoverinfo='text',
+                text=[f"{cat}: {val}" for cat, val in zip(categories, values)]
+            ))
+
+            fig.update_layout(
+                title="📈 Financial Overview",
+                plot_bgcolor="black",
+                paper_bgcolor="black",
+                font=dict(color="white"),
+                xaxis=dict(title="Category", color="white"),
+                yaxis=dict(title="Amount", color="white"),
+                margin=dict(l=40, r=40, t=40, b=40)
+            )
+
+            st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.error("User ID not found.")
